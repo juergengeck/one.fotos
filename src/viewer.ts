@@ -110,7 +110,6 @@ const deleted = [];
 
 function photoSrc(p) {
     if (p.managed === 'ingested') return BLOB_ROOT + '/' + p.hash.slice(0,2) + '/' + p.hash;
-    if (p.sourcePath) return p.sourcePath;
     if (p.thumb) return THUMB_ROOT + '/' + p.thumb;
     return '';
 }
