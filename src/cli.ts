@@ -140,14 +140,25 @@ program
 
 program
     .command('view')
-    .description('Generate the HTML viewer')
+    .description('Generate the HTML document (markup IS the catalog)')
     .option('-o, --output <file>', 'Output file', 'index.html')
     .action(async (opts) => {
         const dir = process.cwd();
         const catalog = await loadCatalog(dir);
         const html = generateViewer(catalog);
         await writeFile(resolve(dir, opts.output), html);
-        console.log(`Viewer written to ${opts.output} (${catalog.photos.length} photos)`);
+        console.log(`Written to ${opts.output} (${catalog.photos.length} photos, HTML-native format)`);
+    });
+
+program
+    .command('json')
+    .description('Export catalog as JSON (derived from native HTML format)')
+    .option('-o, --output <file>', 'Output file', 'catalog.json')
+    .action(async (opts) => {
+        const dir = process.cwd();
+        const catalog = await loadCatalog(dir);
+        await writeFile(resolve(dir, opts.output), JSON.stringify(catalog, null, 2) + '\n');
+        console.log(`JSON export: ${opts.output} (${catalog.photos.length} photos)`);
     });
 
 program
