@@ -1,4 +1,4 @@
-import type { Catalog, PhotoEntry, ExifData } from './types.js';
+import type { Catalog, FotosEntry, ExifData } from './types.js';
 
 /**
  * Generate a self-contained HTML document where the markup IS the catalog.
@@ -78,11 +78,11 @@ ${SCRIPT}
  * Convert a photo entry to semantic HTML markup.
  * The markup IS the data — the viewer reads from the DOM.
  */
-function photoToMarkup(p: PhotoEntry): string {
+function photoToMarkup(p: FotosEntry & {exif?: ExifData}): string {
     const attrs = [
-        `data-hash="${esc(p.hash)}"`,
+        `data-hash="${esc(p.stream.id)}"`,
         `data-managed="${p.managed}"`,
-        `data-added="${esc(p.addedAt)}"`,
+        `data-added="${new Date(p.stream.created).toISOString()}"`,
         `data-size="${p.size}"`,
     ];
     if (p.sourcePath) attrs.push(`data-source="${esc(p.sourcePath)}"`);

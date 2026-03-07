@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-import { Command } from 'commander';
-import { resolve } from 'node:path';
-import { writeFile } from 'node:fs/promises';
+import {Command} from 'commander';
+import {resolve} from 'node:path';
+import {writeFile} from 'node:fs/promises';
 import {
     addPhoto,
     loadCatalog,
@@ -13,10 +13,11 @@ import {
     filterPhotos,
     allTags
 } from './catalog.js';
-import { generateViewer } from './viewer.js';
-import { exportCollection } from './export.js';
-import type { AddMode } from './catalog.js';
-import { DEFAULT_CONFIG } from './types.js';
+import {generateViewer} from './viewer.js';
+import {exportCollection} from './export.js';
+import type {AddMode} from './catalog.js';
+import type {FotosConfig, ExifData} from './types.js';
+import {DEFAULT_CONFIG} from './types.js';
 
 const program = new Command();
 
@@ -30,17 +31,19 @@ program
     .description('Initialize a new photo collection in the current directory')
     .option('--name <name>', 'Collection name')
     .option('--device <device>', 'This device name', 'default')
+    .requiredOption('--owner <owner>', 'Collection owner (required)')
     .action(async (opts) => {
         const dir = process.cwd();
-        const config = { ...DEFAULT_CONFIG, deviceName: opts.device };
+        const config: FotosConfig = {...DEFAULT_CONFIG, owner: opts.owner, deviceName: opts.device};
         await saveConfig(dir, config);
 
         const catalog = await loadCatalog(dir);
         if (opts.name) catalog.name = opts.name;
-        const { saveCatalog } = await import('./catalog.js');
+        const {saveCatalog} = await import('./catalog.js');
         await saveCatalog(dir, catalog);
 
         console.log(`Initialized photo collection: ${catalog.name}`);
+        console.log(`  Owner:  ${config.owner}`);
         console.log(`  Device: ${config.deviceName}`);
         console.log(`  Blobs:  ${config.blobDir}/`);
         console.log(`  Thumbs: ${config.thumbDir}/`);
@@ -57,11 +60,11 @@ program
         for (const file of files) {
             const filePath = resolve(file);
             try {
-                const entry = await addPhoto(dir, filePath, mode);
-                const hash = entry.hash.slice(0, 8);
-                const exifDate = entry.exif?.date ?? '';
+                const {entry, exif} = await addPhoto(dir, filePath, mode);
+                const id = entry.stream.id.slice(0, 8);
+                const exifDate = exif?.date ?? '';
                 console.log(
-                    `  ${hash}  ${entry.name}  [${entry.managed}]${exifDate ? '  ' + exifDate : ''}`
+                    `  ${id}  ${entry.name}  [${entry.managed}]${exifDate ? '  ' + exifDate : ''}`
                 );
             } catch (e: unknown) {
                 const msg = e instanceof Error ? e.message : String(e);
@@ -71,52 +74,53 @@ program
     });
 
 program
-    .command('tag <hash> <tags...>')
-    .description('Add tags to photos matching hash prefix')
-    .action(async (hash: string, tags: string[]) => {
+    .command('tag <id> <tags...>')
+    .description('Add tags to entries matching ID prefix')
+    .action(async (id: string, tags: string[]) => {
         const dir = process.cwd();
-        const updated = await tagPhotos(dir, hash, tags);
-        for (const p of updated) {
-            console.log(`  ${p.hash.slice(0, 8)}  ${p.name}  [${p.tags.join(', ')}]`);
+        const updated = await tagPhotos(dir, id, tags);
+        for (const e of updated) {
+            console.log(`  ${e.stream.id.slice(0, 8)}  ${e.name}  [${e.tags.join(', ')}]`);
         }
     });
 
 program
-    .command('untag <hash> <tags...>')
-    .description('Remove tags from photos matching hash prefix')
-    .action(async (hash: string, tags: string[]) => {
+    .command('untag <id> <tags...>')
+    .description('Remove tags from entries matching ID prefix')
+    .action(async (id: string, tags: string[]) => {
         const dir = process.cwd();
-        const updated = await untagPhotos(dir, hash, tags);
-        for (const p of updated) {
-            console.log(`  ${p.hash.slice(0, 8)}  ${p.name}  [${p.tags.join(', ')}]`);
+        const updated = await untagPhotos(dir, id, tags);
+        for (const e of updated) {
+            console.log(`  ${e.stream.id.slice(0, 8)}  ${e.name}  [${e.tags.join(', ')}]`);
         }
     });
 
 program
     .command('list')
-    .description('List photos in the collection')
+    .description('List entries in the collection')
     .option('-t, --tag <tag>', 'Filter by tag')
     .action(async (opts) => {
         const dir = process.cwd();
         const catalog = await loadCatalog(dir);
-        const photos = filterPhotos(catalog, opts.tag);
+        const entries = filterPhotos(catalog, opts.tag);
 
-        if (photos.length === 0) {
-            console.log('No photos found.');
+        if (entries.length === 0) {
+            console.log('No entries found.');
             return;
         }
 
-        for (const p of photos) {
-            const tags = p.tags.length ? `  [${p.tags.join(', ')}]` : '';
-            const date = p.exif?.date ? `  ${p.exif.date}` : '';
-            const mode = p.managed[0].toUpperCase();
-            const size = (p.size / 1024 / 1024).toFixed(1) + 'MB';
+        for (const e of entries) {
+            const tags = e.tags.length ? `  [${e.tags.join(', ')}]` : '';
+            const exif = e.stream.exif as ExifData | undefined;
+            const date = exif?.date ? `  ${exif.date}` : '';
+            const mode = e.managed[0].toUpperCase();
+            const size = (e.size / 1024 / 1024).toFixed(1) + 'MB';
             console.log(
-                `  ${p.hash.slice(0, 8)}  ${mode}  ${size.padStart(7)}  ${p.name}${date}${tags}`
+                `  ${e.stream.id.slice(0, 8)}  ${mode}  ${size.padStart(7)}  ${e.name}${date}${tags}`
             );
         }
 
-        console.log(`\n${photos.length} photos`);
+        console.log(`\n${entries.length} entries`);
     });
 
 program
@@ -145,9 +149,18 @@ program
     .action(async (opts) => {
         const dir = process.cwd();
         const catalog = await loadCatalog(dir);
-        const html = generateViewer(catalog);
+        const entries = catalog.trie.allEntries();
+        const v1ForViewer = {
+            ...catalog,
+            version: 1 as const,
+            photos: entries.map(e => ({
+                ...e,
+                exif: e.stream.exif as ExifData | undefined,
+            })),
+        };
+        const html = generateViewer(v1ForViewer);
         await writeFile(resolve(dir, opts.output), html);
-        console.log(`Written to ${opts.output} (${catalog.photos.length} photos, HTML-native format)`);
+        console.log(`Written to ${opts.output} (${entries.length} entries, HTML-native format)`);
     });
 
 program
@@ -157,14 +170,19 @@ program
     .action(async (opts) => {
         const dir = process.cwd();
         const catalog = await loadCatalog(dir);
-        await writeFile(resolve(dir, opts.output), JSON.stringify(catalog, null, 2) + '\n');
-        console.log(`JSON export: ${opts.output} (${catalog.photos.length} photos)`);
+        const entries = catalog.trie.allEntries().map(e => ({
+            ...e,
+            exif: e.stream.exif as ExifData | undefined,
+        }));
+        const jsonCatalog = {version: 1, name: catalog.name, created: catalog.created, device: catalog.device, photos: entries};
+        await writeFile(resolve(dir, opts.output), JSON.stringify(jsonCatalog, null, 2) + '\n');
+        console.log(`JSON export: ${opts.output} (${entries.length} entries)`);
     });
 
 program
     .command('export <targetDir>')
     .description('Export collection (or tag subset) as self-contained bundle')
-    .option('-t, --tag <tag>', 'Export only photos with this tag')
+    .option('-t, --tag <tag>', 'Export only entries with this tag')
     .option('--originals', 'Include original photos (not just thumbs)', false)
     .action(async (targetDir: string, opts) => {
         const dir = process.cwd();
@@ -173,7 +191,7 @@ program
             tag: opts.tag,
             includeOriginals: opts.originals
         });
-        console.log(`Exported ${result.exported} photos to ${target}`);
+        console.log(`Exported ${result.exported} entries to ${target}`);
     });
 
 program
@@ -185,14 +203,16 @@ program
         const config = await loadConfig(dir);
         const tags = allTags(catalog);
 
-        const totalSize = catalog.photos.reduce((s, p) => s + p.size, 0);
-        const ingested = catalog.photos.filter(p => p.managed === 'ingested').length;
-        const metadata = catalog.photos.filter(p => p.managed === 'metadata').length;
-        const reference = catalog.photos.filter(p => p.managed === 'reference').length;
+        const entries = catalog.trie.allEntries();
+        const totalSize = entries.reduce((s, e) => s + e.size, 0);
+        const ingested = entries.filter(e => e.managed === 'ingested').length;
+        const metadata = entries.filter(e => e.managed === 'metadata').length;
+        const reference = entries.filter(e => e.managed === 'reference').length;
 
         console.log(`Collection: ${catalog.name}`);
+        console.log(`Owner:      ${config.owner || '(not set)'}`);
         console.log(`Device:     ${config.deviceName}`);
-        console.log(`Photos:     ${catalog.photos.length}`);
+        console.log(`Entries:    ${entries.length}`);
         console.log(`  Ingested:   ${ingested}`);
         console.log(`  Metadata:   ${metadata}`);
         console.log(`  Reference:  ${reference}`);

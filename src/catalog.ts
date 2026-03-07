@@ -1,47 +1,146 @@
-import { readFile, writeFile, stat, copyFile, mkdir } from 'node:fs/promises';
-import { join, basename } from 'node:path';
-import type { Catalog, PhotoEntry, FotosConfig } from './types.js';
-import { DEFAULT_CONFIG } from './types.js';
-import { hashFile, blobPath } from './hash.js';
-import { extractExif } from './exif.js';
-import { generateThumb } from './thumbs.js';
+import {readFile, writeFile, stat, copyFile, mkdir} from 'node:fs/promises';
+import {join, basename} from 'node:path';
+import type {Stream} from '@refinio/chat.media';
+import type {CatalogV2, FotosEntry, FotosConfig, ExifData} from './types.js';
+import {DEFAULT_CONFIG} from './types.js';
+import {FotosTrie} from './fotos-trie.js';
+import type {FotosTrieSnapshot} from './fotos-trie.js';
+import {hashFile, blobPath, computeStreamId, ownerToCreator, mimeFromPath} from './hash.js';
+import {extractExif} from './exif.js';
+import {generateThumb} from './thumbs.js';
+import {initPlatform} from './platform.js';
 
 const CATALOG_FILE = 'catalog.json';
 const CONFIG_FILE = 'fotos.json';
 
+interface CatalogV2OnDisk {
+    version: 2;
+    name: string;
+    created: string;
+    device?: string;
+    trieSnapshot: FotosTrieSnapshot;
+}
+
 /**
  * Load catalog from working directory, or create empty one.
+ * Migrates v1 catalogs to v2 (Stream-based) on load.
  */
-export async function loadCatalog(dir: string): Promise<Catalog> {
+export async function loadCatalog(dir: string): Promise<CatalogV2> {
+    await initPlatform();
     const path = join(dir, CATALOG_FILE);
     try {
         const raw = await readFile(path, 'utf-8');
-        return JSON.parse(raw) as Catalog;
-    } catch {
+        const data = JSON.parse(raw);
+
+        if (data.version === 1) {
+            // Migrate v1 → v2 (Stream-based)
+            const v1 = data as {
+                version: 1;
+                name: string;
+                created: string;
+                device?: string;
+                photos: Array<{
+                    hash: string;
+                    name: string;
+                    managed: 'reference' | 'metadata' | 'ingested';
+                    sourcePath?: string;
+                    thumb?: string;
+                    tags: string[];
+                    exif?: ExifData;
+                    exifHash?: string;
+                    addedAt: string;
+                    size: number;
+                    copies?: string[];
+                }>;
+            };
+            const config = await loadConfig(dir);
+            const creator = await ownerToCreator(config.owner ?? config.deviceName);
+            const trie = await FotosTrie.create(v1.name);
+            for (const photo of v1.photos) {
+                const exif = photo.exif ?? {};
+                const mimeType = mimeFromPath(photo.name);
+                const streamId = await computeStreamId({
+                    creator,
+                    exifDate: exif.date,
+                    mimeType,
+                    contentHash: photo.hash,
+                });
+                const stream: Stream = {
+                    $type$: 'Stream',
+                    id: streamId,
+                    creator: creator as any,
+                    created: new Date(photo.addedAt).getTime(),
+                    mimeType,
+                    status: 'finalized',
+                    exif: Object.keys(exif).length > 0 ? exif as Record<string, unknown> : undefined,
+                };
+                const entry: FotosEntry = {
+                    stream,
+                    name: photo.name,
+                    managed: photo.managed,
+                    sourcePath: photo.sourcePath,
+                    thumb: photo.thumb,
+                    tags: photo.tags,
+                    size: photo.size,
+                    copies: photo.copies,
+                };
+                await trie.insert(entry);
+            }
+            return {
+                version: 2,
+                name: v1.name,
+                created: v1.created,
+                device: v1.device,
+                trie,
+            };
+        }
+
+        // v2: restore from snapshot
+        const onDisk = data as CatalogV2OnDisk;
+        const trie = await FotosTrie.fromSnapshot(onDisk.trieSnapshot, onDisk.name);
         return {
-            version: 1,
-            name: basename(dir),
+            version: 2,
+            name: onDisk.name,
+            created: onDisk.created,
+            device: onDisk.device,
+            trie,
+        };
+    } catch {
+        // No file or parse error — create empty v2
+        const name = basename(dir);
+        const trie = await FotosTrie.create(name);
+        return {
+            version: 2,
+            name,
             created: new Date().toISOString(),
-            photos: []
+            trie,
         };
     }
 }
 
 export async function saveCatalog(
     dir: string,
-    catalog: Catalog
+    catalog: CatalogV2
 ): Promise<void> {
+    await initPlatform();
     const path = join(dir, CATALOG_FILE);
-    await writeFile(path, JSON.stringify(catalog, null, 2) + '\n');
+    const onDisk: CatalogV2OnDisk = {
+        version: 2,
+        name: catalog.name,
+        created: catalog.created,
+        device: catalog.device,
+        trieSnapshot: catalog.trie.serialize(),
+    };
+    await writeFile(path, JSON.stringify(onDisk, null, 2) + '\n');
 }
 
 export async function loadConfig(dir: string): Promise<FotosConfig> {
     const path = join(dir, CONFIG_FILE);
     try {
         const raw = await readFile(path, 'utf-8');
-        return { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+        return {...DEFAULT_CONFIG, ...JSON.parse(raw)};
     } catch {
-        return { ...DEFAULT_CONFIG };
+        return {...DEFAULT_CONFIG, owner: ''};
     }
 }
 
@@ -55,6 +154,11 @@ export async function saveConfig(
 
 export type AddMode = 'reference' | 'metadata' | 'ingest';
 
+export interface AddResult {
+    entry: FotosEntry;
+    exif?: ExifData;
+}
+
 /**
  * Add a photo to the catalog.
  */
@@ -62,30 +166,58 @@ export async function addPhoto(
     dir: string,
     filePath: string,
     mode: AddMode
-): Promise<PhotoEntry> {
+): Promise<AddResult> {
     const config = await loadConfig(dir);
+    if (!config.owner) {
+        throw new Error("No owner configured. Run 'fotos init --owner <name>' first.");
+    }
     const catalog = await loadCatalog(dir);
 
-    const hash = await hashFile(filePath);
+    const contentHash = await hashFile(filePath);
+    const mimeType = mimeFromPath(filePath);
+    const creator = await ownerToCreator(config.owner);
+    const fileStat = await stat(filePath);
+
+    let exif: ExifData = {};
+
+    // Extract EXIF for metadata/ingest modes
+    if (mode === 'metadata' || mode === 'ingest') {
+        exif = await extractExif(filePath);
+    }
+
+    // Compute deterministic stream ID
+    const streamId = await computeStreamId({
+        creator,
+        exifDate: exif.date,
+        mimeType,
+        contentHash,
+    });
 
     // Check for duplicate
-    const existing = catalog.photos.find(p => p.hash === hash);
+    const existing = catalog.trie.getEntry(streamId);
     if (existing) {
         throw new Error(
-            `Photo already in catalog: ${existing.name} (${hash.slice(0, 8)})`
+            `Photo already in catalog: ${existing.name} (${streamId.slice(0, 8)})`
         );
     }
 
-    const fileStat = await stat(filePath);
+    const stream: Stream = {
+        $type$: 'Stream',
+        id: streamId,
+        creator: creator as any,
+        created: Date.now(),
+        mimeType,
+        status: 'finalized',
+        exif: Object.keys(exif).length > 0 ? exif as Record<string, unknown> : undefined,
+    };
 
-    const entry: PhotoEntry = {
-        hash,
+    const entry: FotosEntry = {
+        stream,
         name: basename(filePath),
         managed: mode === 'ingest' ? 'ingested' : mode,
         tags: [],
-        addedAt: new Date().toISOString(),
         size: fileStat.size,
-        copies: [config.deviceName]
+        copies: [config.deviceName],
     };
 
     // Reference mode: just store the source path
@@ -93,15 +225,13 @@ export async function addPhoto(
         entry.sourcePath = filePath;
     }
 
-    // Metadata mode: extract EXIF + generate thumbnail
+    // Metadata mode: store source path + generate thumbnail
     if (mode === 'metadata' || mode === 'ingest') {
         entry.sourcePath = mode === 'metadata' ? filePath : undefined;
-        entry.exif = await extractExif(filePath);
-
         const thumbDir = join(dir, config.thumbDir);
         entry.thumb = await generateThumb(
             filePath,
-            hash,
+            streamId,
             thumbDir,
             config.thumbSize
         );
@@ -110,40 +240,41 @@ export async function addPhoto(
     // Ingest mode: copy to blob store
     if (mode === 'ingest') {
         const blobDir = join(dir, config.blobDir);
-        const dest = join(blobDir, blobPath(hash));
-        await mkdir(join(blobDir, hash.slice(0, 2)), { recursive: true });
+        const dest = join(blobDir, blobPath(streamId));
+        await mkdir(join(blobDir, streamId.slice(0, 2)), {recursive: true});
         await copyFile(filePath, dest);
     }
 
-    catalog.photos.push(entry);
+    await catalog.trie.insert(entry);
     await saveCatalog(dir, catalog);
 
-    return entry;
+    return {entry, exif: Object.keys(exif).length > 0 ? exif : undefined};
 }
 
 /**
- * Tag photos by hash prefix.
+ * Tag entries by stream ID prefix.
  */
 export async function tagPhotos(
     dir: string,
-    hashPrefix: string,
+    idPrefix: string,
     tags: string[]
-): Promise<PhotoEntry[]> {
+): Promise<FotosEntry[]> {
     const catalog = await loadCatalog(dir);
-    const matches = catalog.photos.filter(p =>
-        p.hash.startsWith(hashPrefix)
+    const matches = catalog.trie.allEntries().filter(e =>
+        e.stream.id.startsWith(idPrefix)
     );
 
     if (matches.length === 0) {
-        throw new Error(`No photos matching prefix: ${hashPrefix}`);
+        throw new Error(`No entries matching prefix: ${idPrefix}`);
     }
 
-    for (const photo of matches) {
+    for (const entry of matches) {
         for (const tag of tags) {
-            if (!photo.tags.includes(tag)) {
-                photo.tags.push(tag);
+            if (!entry.tags.includes(tag)) {
+                entry.tags.push(tag);
             }
         }
+        catalog.trie.updateEntry(entry.stream.id, entry);
     }
 
     await saveCatalog(dir, catalog);
@@ -151,24 +282,25 @@ export async function tagPhotos(
 }
 
 /**
- * Remove tags from photos.
+ * Remove tags from entries.
  */
 export async function untagPhotos(
     dir: string,
-    hashPrefix: string,
+    idPrefix: string,
     tags: string[]
-): Promise<PhotoEntry[]> {
+): Promise<FotosEntry[]> {
     const catalog = await loadCatalog(dir);
-    const matches = catalog.photos.filter(p =>
-        p.hash.startsWith(hashPrefix)
+    const matches = catalog.trie.allEntries().filter(e =>
+        e.stream.id.startsWith(idPrefix)
     );
 
     if (matches.length === 0) {
-        throw new Error(`No photos matching prefix: ${hashPrefix}`);
+        throw new Error(`No entries matching prefix: ${idPrefix}`);
     }
 
-    for (const photo of matches) {
-        photo.tags = photo.tags.filter(t => !tags.includes(t));
+    for (const entry of matches) {
+        entry.tags = entry.tags.filter(t => !tags.includes(t));
+        catalog.trie.updateEntry(entry.stream.id, entry);
     }
 
     await saveCatalog(dir, catalog);
@@ -176,23 +308,24 @@ export async function untagPhotos(
 }
 
 /**
- * List photos, optionally filtered by tag.
+ * List entries, optionally filtered by tag.
  */
 export function filterPhotos(
-    catalog: Catalog,
+    catalog: CatalogV2,
     tag?: string
-): PhotoEntry[] {
-    if (!tag) return catalog.photos;
-    return catalog.photos.filter(p => p.tags.includes(tag));
+): FotosEntry[] {
+    const entries = catalog.trie.allEntries();
+    if (!tag) return entries;
+    return entries.filter(e => e.tags.includes(tag));
 }
 
 /**
  * Get all unique tags in the catalog.
  */
-export function allTags(catalog: Catalog): Map<string, number> {
+export function allTags(catalog: CatalogV2): Map<string, number> {
     const tags = new Map<string, number>();
-    for (const photo of catalog.photos) {
-        for (const tag of photo.tags) {
+    for (const entry of catalog.trie.allEntries()) {
+        for (const tag of entry.tags) {
             tags.set(tag, (tags.get(tag) ?? 0) + 1);
         }
     }

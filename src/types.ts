@@ -1,17 +1,22 @@
+import type {Stream} from '@refinio/chat.media';
+
 /**
- * A photo entry in the catalog.
+ * A media entry in the fotos catalog.
+ *
+ * The Stream is the interoperable media object (shared with chat.media).
+ * FotosEntry adds collection-specific metadata.
  *
  * Storage spectrum:
- * - reference: points to existing file, no copy made
+ * - reference: points to existing file, no copies
  * - metadata: reference + extracted EXIF + generated thumbnail
  * - ingested: fully copied into content-addressed blob store
  */
-export interface PhotoEntry {
-    /** Content hash (SHA-256) of the original file */
-    hash: string;
+export interface FotosEntry {
+    /** The media stream (identity, content type, metadata) */
+    stream: Stream;
     /** Original filename */
     name: string;
-    /** How this photo is managed */
+    /** How this entry is managed */
     managed: 'reference' | 'metadata' | 'ingested';
     /** Path to original file (for reference/metadata mode) */
     sourcePath?: string;
@@ -19,10 +24,6 @@ export interface PhotoEntry {
     thumb?: string;
     /** Tags/labels */
     tags: string[];
-    /** EXIF metadata */
-    exif?: ExifData;
-    /** When this entry was added to the catalog */
-    addedAt: string;
     /** File size in bytes */
     size: number;
     /** Redundancy: which devices have a copy */
@@ -37,17 +38,32 @@ export interface ExifData {
     aperture?: string;
     shutter?: string;
     iso?: number;
-    gps?: { lat: number; lon: number };
+    gps?: {lat: number; lon: number};
     width?: number;
     height?: number;
 }
 
+/**
+ * V1 catalog format (for viewer/export compatibility).
+ * Photos have exif resolved inline from the Stream.
+ */
 export interface Catalog {
     version: 1;
     name: string;
     created: string;
     device?: string;
-    photos: PhotoEntry[];
+    photos: Array<FotosEntry & {exif?: ExifData}>;
+}
+
+/** Alias for migration code */
+export type CatalogV1 = Catalog;
+
+export interface CatalogV2 {
+    version: 2;
+    name: string;
+    created: string;
+    device?: string;
+    trie: import('./fotos-trie.js').FotosTrie;
 }
 
 export interface FotosConfig {
@@ -59,9 +75,11 @@ export interface FotosConfig {
     thumbSize: number;
     /** This device's name (for redundancy tracking) */
     deviceName: string;
+    /** Collection owner — used as Stream.creator */
+    owner: string;
 }
 
-export const DEFAULT_CONFIG: FotosConfig = {
+export const DEFAULT_CONFIG: Omit<FotosConfig, 'owner'> = {
     blobDir: 'blobs',
     thumbDir: 'thumbs',
     thumbSize: 400,
