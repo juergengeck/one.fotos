@@ -51,6 +51,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
 .lightbox img { max-width: 90vw; max-height: 80vh; object-fit: contain; }
 .lightbox .lb-close { position: absolute; top: 16px; right: 24px; font-size: 28px; color: #888; cursor: pointer; background: none; border: none; }
 .lightbox .lb-close:hover { color: #eee; }
+.lightbox .lb-delete { position: absolute; top: 16px; left: 24px; font-size: 20px; color: #844; cursor: pointer; background: none; border: 1px solid #633; border-radius: 4px; padding: 4px 12px; }
+.lightbox .lb-delete:hover { color: #faa; border-color: #a55; }
 .lightbox .lb-nav { position: absolute; top: 50%; font-size: 36px; color: #888; cursor: pointer; background: none; border: none; padding: 16px; }
 .lightbox .lb-nav:hover { color: #eee; }
 .lightbox .lb-prev { left: 8px; }
@@ -83,6 +85,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
 <div class="grid" id="grid"></div>
 
 <div class="lightbox" id="lightbox">
+    <button class="lb-delete" id="lbDelete">Delete</button>
     <button class="lb-close" id="lbClose">&times;</button>
     <button class="lb-nav lb-prev" id="lbPrev">&#8249;</button>
     <button class="lb-nav lb-next" id="lbNext">&#8250;</button>
@@ -103,6 +106,7 @@ let activeTag = null;
 let searchQuery = '';
 let currentIndex = -1;
 let filtered = [];
+const deleted = [];
 
 function photoSrc(p) {
     if (p.managed === 'ingested') return BLOB_ROOT + '/' + p.hash.slice(0,2) + '/' + p.hash;
@@ -219,6 +223,22 @@ document.getElementById('grid').addEventListener('click', e => {
     const card = e.target.closest('.card');
     if (!card) return;
     openLightbox(parseInt(card.dataset.index));
+});
+
+document.getElementById('lbDelete').addEventListener('click', () => {
+    if (currentIndex < 0) return;
+    const photo = filtered[currentIndex];
+    const idx = catalog.photos.indexOf(photo);
+    if (idx !== -1) {
+        catalog.photos.splice(idx, 1);
+        deleted.push(photo.hash);
+    }
+    closeLightbox();
+    renderTags();
+    applyFilters();
+    document.getElementById('stats').textContent =
+        filtered.length + ' of ' + catalog.photos.length + ' photos'
+        + (deleted.length ? ' (' + deleted.length + ' deleted)' : '');
 });
 
 document.getElementById('lbClose').addEventListener('click', closeLightbox);
