@@ -15,6 +15,7 @@ import {
 } from './catalog.js';
 import {generateViewer} from './viewer.js';
 import {exportCollection} from './export.js';
+import {ingestMediaDirectory, writeGitignore} from './ingest.js';
 import type {AddMode} from './catalog.js';
 import type {FotosConfig, ExifData} from './types.js';
 import {DEFAULT_CONFIG} from './types.js';
@@ -222,6 +223,55 @@ program
         if (tags.size > 0) {
             const top = [...tags.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
             console.log(`  Top:      ${top.map(([t, n]) => `${t}(${n})`).join(', ')}`);
+        }
+    });
+
+program
+    .command('ingest [dir]')
+    .description('Scan directory tree, extract metadata, generate thumbnails, write .one/ folders')
+    .option('--owner <owner>', 'Collection owner')
+    .option('--device <device>', 'Device name', 'default')
+    .option('--force', 'Re-process all folders even if unchanged', false)
+    .option('--faces', 'Run InsightFace detection + recognition', false)
+    .option('--model-dir <path>', 'InsightFace ONNX model directory')
+    .option('--git', 'Write .gitignore (tracks only .one/ folders)', false)
+    .action(async (dir: string | undefined, opts) => {
+        const targetDir = dir ? resolve(dir) : process.cwd();
+        const config = await loadConfig(targetDir);
+
+        if (opts.owner) config.owner = opts.owner;
+        if (opts.device) config.deviceName = opts.device;
+
+        if (!config.owner) {
+            console.error("No owner configured. Use --owner <name> or run 'fotos init' first.");
+            process.exit(1);
+        }
+
+        await saveConfig(targetDir, config);
+
+        console.log(`Ingesting ${targetDir}...`);
+        if (opts.faces) console.log('  Face detection + recognition enabled');
+        const result = await ingestMediaDirectory(targetDir, config, {
+            force: opts.force,
+            faces: opts.faces,
+            modelDir: opts.modelDir,
+        });
+
+        let mediaCount = 0;
+        for (const node of result.nodes.values()) {
+            const media = node.entries.filter(e =>
+                e.mime.startsWith('image/') || e.mime.startsWith('video/')
+            );
+            mediaCount += media.length;
+        }
+
+        console.log(`  ${result.nodes.size} directories scanned`);
+        console.log(`  ${result.updated} updated, ${result.skipped} unchanged`);
+        console.log(`  ${mediaCount} media files`);
+
+        if (opts.git) {
+            await writeGitignore(targetDir);
+            console.log(`  .gitignore written`);
         }
     });
 
