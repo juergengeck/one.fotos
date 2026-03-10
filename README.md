@@ -121,7 +121,7 @@ Face embeddings enable:
 React 19 + Vite app that runs entirely client-side — no server, no upload.
 
 **Desktop** (Chrome/Edge/Arc): uses File System Access API with `readwrite` mode.
-1. User clicks "import your image folder" → `showDirectoryPicker()`
+1. User clicks "attach photo library" → `showDirectoryPicker()`
 2. If no `.one/` metadata found, **auto-ingests**: EXIF extraction via `exifreader`, thumbnails via `OffscreenCanvas`, content hashes via `crypto.subtle`, writes `.one/index.html` per directory
 3. If `.one/` already exists (from CLI or previous browser session), reads it directly
 4. Full gallery with day groups, tag filtering, search, lightbox, timeline scrubber
