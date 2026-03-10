@@ -34,11 +34,11 @@ describe('FotosTrie', () => {
         await trie.insert(makeEntry('b'.repeat(64), '2025-09-01T14:00:00'));
         await trie.insert(makeEntry('c'.repeat(64), '2025-12-25T09:00:00'));
 
-        const aug = trie.queryDateRange(new Date('2025-08-01'), new Date('2025-08-31'));
+        const aug = await trie.queryDateRange(new Date('2025-08-01'), new Date('2025-08-31'));
         expect(aug).toHaveLength(1);
         expect(aug[0].stream.id).toBe('a'.repeat(64));
 
-        const all = trie.queryDateRange(new Date('2025-01-01'), new Date('2025-12-31'));
+        const all = await trie.queryDateRange(new Date('2025-01-01'), new Date('2025-12-31'));
         expect(all).toHaveLength(3);
     });
 
@@ -82,7 +82,7 @@ describe('FotosTrie', () => {
         await trie.insert(entry);
 
         const updated = {...entry, tags: ['landscape', 'sunset']};
-        trie.updateEntry(entry.stream.id, updated);
+        await trie.updateEntry(entry.stream.id, updated);
 
         expect(trie.getEntry(entry.stream.id)?.tags).toEqual(['landscape', 'sunset']);
     });

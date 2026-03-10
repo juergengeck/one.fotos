@@ -1,12 +1,7 @@
 import {
-    MultiTrie,
-    sha256HashFn,
-    hashPrefixKeyFn,
-    timePathKeyFn,
-    timePathLeafKeys,
-    diff,
-    ContentAddressedTrie,
-} from '@refinio/trie.core';
+    GalleryTrieManager,
+    type GalleryIndexEntry,
+} from '@refinio/fotos.core';
 import type {Hash} from '@refinio/trie.core';
 import type {FotosEntry, ExifData} from './types.js';
 
@@ -15,107 +10,126 @@ export interface FotosTrieSnapshot {
     timeEntries: Array<{id: string; timestamp: string}>;
 }
 
-export class FotosTrie {
-    private readonly multi: MultiTrie;
-    private readonly entries = new Map<string, FotosEntry>();
-    private readonly trieId: string;
-    private syncTrie!: ContentAddressedTrie;
-    private timeTrie!: ContentAddressedTrie;
+type IndexedFotosEntry = FotosEntry & GalleryIndexEntry;
 
-    private constructor(multi: MultiTrie, trieId: string) {
-        this.multi = multi;
-        this.trieId = trieId;
+function resolveExif(entry: FotosEntry): ExifData | undefined {
+    return entry.stream.exif as ExifData | undefined;
+}
+
+function toIsoTimestamp(value: number): string {
+    return new Date(value).toISOString();
+}
+
+function entryTimestamp(entry: FotosEntry): string {
+    return resolveExif(entry)?.date ?? toIsoTimestamp(entry.stream.created);
+}
+
+function toIndexedEntry(entry: FotosEntry): IndexedFotosEntry {
+    const capturedAt = resolveExif(entry)?.date;
+    const addedAt = toIsoTimestamp(entry.stream.created);
+
+    return {
+        ...entry,
+        hash: entry.stream.id,
+        addedAt,
+        capturedAt,
+        updatedAt: addedAt,
+        sourcePath: entry.sourcePath,
+    };
+}
+
+function stripIndexedEntry(entry: IndexedFotosEntry): FotosEntry {
+    const {
+        hash: _hash,
+        addedAt: _addedAt,
+        capturedAt: _capturedAt,
+        updatedAt: _updatedAt,
+        folderPath: _folderPath,
+        ...plain
+    } = entry;
+
+    return plain;
+}
+
+function isWithinRange(timestamp: string, from: Date, to: Date): boolean {
+    const value = new Date(timestamp).getTime();
+    const start = Math.min(from.getTime(), to.getTime());
+    const end = Math.max(from.getTime(), to.getTime());
+    return value >= start && value <= end;
+}
+
+export class FotosTrie {
+    private readonly gallery: GalleryTrieManager<IndexedFotosEntry>;
+
+    private constructor(gallery: GalleryTrieManager<IndexedFotosEntry>) {
+        this.gallery = gallery;
     }
 
     static async create(trieId: string): Promise<FotosTrie> {
-        const multi = new MultiTrie([
-            {
-                name: 'sync',
-                config: {
-                    chunkSize: 2,
-                    maxDepth: 4,
-                    hashFn: sha256HashFn,
-                    keyFn: hashPrefixKeyFn(2, 4),
-                },
-            },
-            {
-                name: 'time',
-                config: {
-                    chunkSize: 2,
-                    maxDepth: 3,
-                    hashFn: sha256HashFn,
-                    keyFn: timePathKeyFn('day', trieId),
-                },
-            },
-        ]);
-        const ft = new FotosTrie(multi, trieId);
-        ft.syncTrie = await multi.getTrie('sync');
-        ft.timeTrie = await multi.getTrie('time');
-        return ft;
+        return new FotosTrie(new GalleryTrieManager<IndexedFotosEntry>(trieId));
     }
 
     async insert(entry: FotosEntry): Promise<void> {
-        const id = entry.stream.id as Hash;
-        const exif = entry.stream.exif as ExifData | undefined;
-        const timestamp = exif?.date
-            ? new Date(exif.date)
-            : new Date(entry.stream.created);
-        await this.multi.insert(id, {timestamp});
-        this.entries.set(entry.stream.id, entry);
+        await this.gallery.upsertEntry(toIndexedEntry(entry));
     }
 
     getEntry(id: string): FotosEntry | undefined {
-        return this.entries.get(id);
+        const entry = this.gallery.getEntry(id);
+        return entry ? stripIndexedEntry(entry) : undefined;
     }
 
     /** Update an existing entry's metadata (for tag/untag). */
-    updateEntry(id: string, entry: FotosEntry): void {
-        this.entries.set(id, entry);
+    async updateEntry(id: string, entry: FotosEntry): Promise<void> {
+        if (id !== entry.stream.id) {
+            throw new Error(`Entry id mismatch: expected ${id}, got ${entry.stream.id}`);
+        }
+
+        await this.gallery.upsertEntry(toIndexedEntry(entry));
     }
 
     allEntries(): FotosEntry[] {
-        return [...this.entries.values()];
+        return this.gallery.listEntries().map(stripIndexedEntry);
     }
 
     entryCount(): number {
-        return this.entries.size;
+        return this.gallery.listEntries().length;
     }
 
-    /** Query entries within a date range using the time trie. */
-    queryDateRange(from: Date, to: Date): FotosEntry[] {
-        const paths = timePathLeafKeys(from, to, this.trieId, 'day');
-        const ids = new Set<string>();
-        for (const path of paths) {
-            for (const h of this.timeTrie.collectEntriesAtPath(path)) {
-                ids.add(h);
-            }
-        }
-        return [...ids]
-            .map(id => this.entries.get(id))
-            .filter((e): e is FotosEntry => e !== undefined);
+    /** Query entries within a date range using the shared capture-time trie. */
+    async queryDateRange(from: Date, to: Date): Promise<FotosEntry[]> {
+        const indexed = await this.gallery.getEntriesInDateRange(from, to);
+        return indexed
+            .filter(entry => isWithinRange(entryTimestamp(entry), from, to))
+            .map(stripIndexedEntry);
     }
 
     async syncRoot(): Promise<Hash | null> {
-        return this.multi.getRoot('sync');
+        return await this.gallery.getRoot(
+            'sync' as Parameters<GalleryTrieManager<IndexedFotosEntry>['getRoot']>[0]
+        ) as Hash | null;
     }
 
     /** Diff: find entry IDs in this trie that remote is missing. */
     diffFrom(remote: FotosTrie): string[] {
-        const result = diff(remote.syncTrie, this.syncTrie);
-        return result.missing as string[];
+        const remoteIds = new Set(remote.allEntries().map(entry => entry.stream.id));
+        return this.allEntries()
+            .map(entry => entry.stream.id)
+            .filter(id => !remoteIds.has(id));
     }
 
     serialize(): FotosTrieSnapshot {
         const entries: Record<string, FotosEntry> = {};
-        for (const [id, entry] of this.entries) {
-            entries[id] = entry;
-        }
         const timeEntries: Array<{id: string; timestamp: string}> = [];
-        for (const entry of this.entries.values()) {
-            const exif = entry.stream.exif as ExifData | undefined;
-            const ts = exif?.date ?? new Date(entry.stream.created).toISOString();
-            timeEntries.push({id: entry.stream.id, timestamp: ts});
+
+        for (const entry of this.gallery.listEntries()) {
+            const plain = stripIndexedEntry(entry);
+            entries[plain.stream.id] = plain;
+            timeEntries.push({
+                id: plain.stream.id,
+                timestamp: entryTimestamp(plain),
+            });
         }
+
         return {entries, timeEntries};
     }
 
@@ -124,19 +138,9 @@ export class FotosTrie {
         trieId: string
     ): Promise<FotosTrie> {
         const trie = await FotosTrie.create(trieId);
-        // Restore entries
-        for (const [id, entry] of Object.entries(snapshot.entries)) {
-            trie.entries.set(id, entry);
-        }
-        // Rebuild tries by re-inserting all IDs with timestamps
-        for (const {id, timestamp} of snapshot.timeEntries) {
-            await trie.multi.insert(id as Hash, {
-                timestamp: new Date(timestamp),
-            });
-        }
-        // Re-fetch tries after inserts
-        trie.syncTrie = await trie.multi.getTrie('sync');
-        trie.timeTrie = await trie.multi.getTrie('time');
+        await trie.gallery.replaceEntries(
+            Object.values(snapshot.entries).map(toIndexedEntry)
+        );
         return trie;
     }
 }

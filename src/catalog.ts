@@ -274,7 +274,7 @@ export async function tagPhotos(
                 entry.tags.push(tag);
             }
         }
-        catalog.trie.updateEntry(entry.stream.id, entry);
+        await catalog.trie.updateEntry(entry.stream.id, entry);
     }
 
     await saveCatalog(dir, catalog);
@@ -300,7 +300,7 @@ export async function untagPhotos(
 
     for (const entry of matches) {
         entry.tags = entry.tags.filter(t => !tags.includes(t));
-        catalog.trie.updateEntry(entry.stream.id, entry);
+        await catalog.trie.updateEntry(entry.stream.id, entry);
     }
 
     await saveCatalog(dir, catalog);
