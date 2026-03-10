@@ -1,5 +1,5 @@
 import {describe, it, expect, beforeEach} from 'vitest';
-import {loadCatalog, saveCatalog} from '../src/catalog.js';
+import {loadCatalog, saveCatalog, filterPhotos} from '../src/catalog.js';
 import {mkdtempSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -33,6 +33,7 @@ describe('catalog with trie', () => {
                 hash: 'a'.repeat(64),
                 name: 'test.jpg',
                 managed: 'metadata',
+                sourcePath: 'Trips/Berlin/test.jpg',
                 tags: ['vacation'],
                 addedAt: '2025-08-15T10:00:00Z',
                 size: 5000,
@@ -46,6 +47,7 @@ describe('catalog with trie', () => {
         const entry = catalog.trie.allEntries()[0];
         expect(entry.name).toBe('test.jpg');
         expect(entry.tags).toEqual(['vacation']);
+        expect(entry.folderPath).toBe('Trips/Berlin');
         expect(entry.stream.mimeType).toBe('image/jpeg');
         expect(entry.stream.exif).toEqual({date: '2025-08-15T10:00:00'});
     });
@@ -64,6 +66,7 @@ describe('catalog with trie', () => {
             } as Stream,
             name: 'photo.jpg',
             managed: 'metadata',
+            folderPath: 'Trips/Berlin',
             tags: [],
             size: 3000,
         });
@@ -72,5 +75,49 @@ describe('catalog with trie', () => {
         const reloaded = await loadCatalog(dir);
         expect(reloaded.trie.allEntries()).toHaveLength(1);
         expect(reloaded.trie.getEntry(id)?.name).toBe('photo.jpg');
+        expect(reloaded.trie.getEntry(id)?.folderPath).toBe('Trips/Berlin');
+    });
+
+    it('filters by shared folder trie', async () => {
+        const catalog = await loadCatalog(dir);
+        await catalog.trie.insert({
+            stream: {
+                $type$: 'Stream',
+                id: 'c'.repeat(64),
+                creator: 'test-creator' as any,
+                created: Date.parse('2025-08-15T10:00:00Z'),
+                mimeType: 'image/jpeg',
+                status: 'finalized',
+                exif: {date: '2025-08-15T10:00:00Z'},
+            } as Stream,
+            name: 'berlin.jpg',
+            managed: 'metadata',
+            folderPath: 'Trips/Berlin',
+            tags: ['travel'],
+            size: 1000,
+        });
+        await catalog.trie.insert({
+            stream: {
+                $type$: 'Stream',
+                id: 'd'.repeat(64),
+                creator: 'test-creator' as any,
+                created: Date.parse('2025-09-15T10:00:00Z'),
+                mimeType: 'image/jpeg',
+                status: 'finalized',
+                exif: {date: '2025-09-15T10:00:00Z'},
+            } as Stream,
+            name: 'family.jpg',
+            managed: 'metadata',
+            folderPath: 'Family',
+            tags: ['family'],
+            size: 1000,
+        });
+
+        expect((await filterPhotos(catalog, undefined, 'Trips')).map(entry => entry.name)).toEqual([
+            'berlin.jpg',
+        ]);
+        expect((await filterPhotos(catalog, 'travel', 'Trips/Berlin')).map(entry => entry.name)).toEqual([
+            'berlin.jpg',
+        ]);
     });
 });

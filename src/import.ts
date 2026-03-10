@@ -7,6 +7,21 @@ import {blobPath} from './hash.js';
 import type {Catalog, FotosConfig, FotosEntry} from './types.js';
 import {DEFAULT_CONFIG} from './types.js';
 
+function folderPathFromSourcePath(sourcePath?: string): string | undefined {
+    if (!sourcePath) {
+        return undefined;
+    }
+
+    const normalized = sourcePath
+        .replace(/\\/g, '/')
+        .split('/')
+        .map(segment => segment.trim())
+        .filter(Boolean);
+
+    normalized.pop();
+    return normalized.length > 0 ? normalized.join('/') : undefined;
+}
+
 async function readBundleCatalog(sourceDir: string): Promise<Catalog> {
     const raw = await readFile(join(sourceDir, 'catalog.json'), 'utf-8');
     const parsed = JSON.parse(raw) as Catalog;
@@ -75,6 +90,7 @@ function normalizeImportedEntry(
         stream,
         name: photo.name,
         managed: photo.managed === 'ingested' ? 'ingested' : 'metadata',
+        folderPath: photo.folderPath ?? folderPathFromSourcePath(photo.sourcePath),
         thumb: photo.thumb,
         tags: [...photo.tags],
         size: photo.size,

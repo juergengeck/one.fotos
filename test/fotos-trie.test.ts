@@ -3,7 +3,12 @@ import {FotosTrie} from '../src/fotos-trie.js';
 import type {FotosEntry} from '../src/types.js';
 import type {Stream} from '@refinio/chat.media';
 
-const makeEntry = (id: string, date: string, tags: string[] = ['test']): FotosEntry => ({
+const makeEntry = (
+    id: string,
+    date: string,
+    tags: string[] = ['test'],
+    folderPath?: string
+): FotosEntry => ({
     stream: {
         $type$: 'Stream',
         id,
@@ -15,6 +20,7 @@ const makeEntry = (id: string, date: string, tags: string[] = ['test']): FotosEn
     } as Stream,
     name: `photo-${id.slice(0, 4)}.jpg`,
     managed: 'metadata',
+    folderPath,
     tags,
     size: 1000,
 });
@@ -30,9 +36,9 @@ describe('FotosTrie', () => {
 
     it('query by date range', async () => {
         const trie = await FotosTrie.create('test');
-        await trie.insert(makeEntry('a'.repeat(64), '2025-08-15T10:00:00'));
-        await trie.insert(makeEntry('b'.repeat(64), '2025-09-01T14:00:00'));
-        await trie.insert(makeEntry('c'.repeat(64), '2025-12-25T09:00:00'));
+        await trie.insert(makeEntry('a'.repeat(64), '2025-08-15T10:00:00', ['test'], 'Trips/Berlin'));
+        await trie.insert(makeEntry('b'.repeat(64), '2025-09-01T14:00:00', ['test'], 'Trips/Berlin'));
+        await trie.insert(makeEntry('c'.repeat(64), '2025-12-25T09:00:00', ['test'], 'Family'));
 
         const aug = await trie.queryDateRange(new Date('2025-08-01'), new Date('2025-08-31'));
         expect(aug).toHaveLength(1);
@@ -40,6 +46,25 @@ describe('FotosTrie', () => {
 
         const all = await trie.queryDateRange(new Date('2025-01-01'), new Date('2025-12-31'));
         expect(all).toHaveLength(3);
+    });
+
+    it('query by folder path', async () => {
+        const trie = await FotosTrie.create('test');
+        await trie.insert(makeEntry('a'.repeat(64), '2025-08-15T10:00:00', ['test'], 'Trips/Berlin'));
+        await trie.insert(makeEntry('b'.repeat(64), '2025-09-01T14:00:00', ['test'], 'Trips/Berlin'));
+        await trie.insert(makeEntry('c'.repeat(64), '2025-12-25T09:00:00', ['test'], 'Family'));
+
+        expect((await trie.getEntriesForFolder('Trips')).map(entry => entry.stream.id)).toEqual([
+            'b'.repeat(64),
+            'a'.repeat(64),
+        ]);
+        expect((await trie.getEntriesForFolder('Trips/Berlin')).map(entry => entry.stream.id)).toEqual([
+            'b'.repeat(64),
+            'a'.repeat(64),
+        ]);
+        expect((await trie.getEntriesForFolder('Family')).map(entry => entry.stream.id)).toEqual([
+            'c'.repeat(64),
+        ]);
     });
 
     it('sync root changes on insert', async () => {
@@ -65,14 +90,15 @@ describe('FotosTrie', () => {
 
     it('serialize and restore round-trips', async () => {
         const trie = await FotosTrie.create('test');
-        await trie.insert(makeEntry('a'.repeat(64), '2025-08-15T10:00:00'));
-        await trie.insert(makeEntry('b'.repeat(64), '2025-09-01T14:00:00'));
+        await trie.insert(makeEntry('a'.repeat(64), '2025-08-15T10:00:00', ['test'], 'Trips/Berlin'));
+        await trie.insert(makeEntry('b'.repeat(64), '2025-09-01T14:00:00', ['test'], 'Trips/Paris'));
 
         const snapshot = trie.serialize();
         const restored = await FotosTrie.fromSnapshot(snapshot, 'test');
 
         expect(restored.allEntries()).toHaveLength(2);
         expect(restored.getEntry('a'.repeat(64))).toBeDefined();
+        expect(restored.getEntry('a'.repeat(64))?.folderPath).toBe('Trips/Berlin');
         expect(await restored.syncRoot()).toBe(await trie.syncRoot());
     });
 

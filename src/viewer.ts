@@ -87,6 +87,7 @@ function photoToMarkup(p: FotosEntry & {exif?: ExifData}): string {
         `data-size="${p.size}"`,
     ];
     if (p.sourcePath) attrs.push(`data-source="${esc(p.sourcePath)}"`);
+    if (p.folderPath) attrs.push(`data-folder="${esc(p.folderPath)}"`);
     if (p.copies?.length) attrs.push(`data-copies="${esc(p.copies.join(','))}"`);
 
     const thumbSrc = p.thumb ? `thumbs/${p.thumb}` : '';
@@ -140,6 +141,7 @@ function domToCatalog() {
             size: parseInt(el.dataset.size) || 0,
             tags: Array.from(el.querySelectorAll('.tags li')).map(li => li.textContent),
             sourcePath: el.dataset.source || undefined,
+            folderPath: el.dataset.folder || undefined,
             copies: el.dataset.copies ? el.dataset.copies.split(',') : undefined,
         };
         const dl = el.querySelector('dl.exif');
@@ -271,6 +273,7 @@ function fotoData(el) {
         name: el.querySelector('h3')?.textContent || '',
         managed: el.dataset.managed,
         tags: Array.from(el.querySelectorAll('.tags li')).map(li => li.textContent),
+        folderPath: el.dataset.folder || '',
         exif: readExif(el),
         thumb: el.querySelector('img')?.getAttribute('src') || '',
     };
@@ -298,6 +301,7 @@ function matchesSearch(f, q) {
     q = q.toLowerCase();
     return f.name.toLowerCase().includes(q)
         || f.tags.some(t => t.toLowerCase().includes(q))
+        || (f.folderPath || '').toLowerCase().includes(q)
         || (f.exif.camera || '').toLowerCase().includes(q)
         || (f.exif.date || '').includes(q);
 }

@@ -18,7 +18,7 @@ export async function exportCollection(
 ): Promise<{exported: number}> {
     const catalog = await loadCatalog(sourceDir);
     const config = await loadConfig(sourceDir);
-    const entries = filterPhotos(catalog, options.tag);
+    const entries = await filterPhotos(catalog, options.tag);
 
     if (entries.length === 0) {
         throw new Error(

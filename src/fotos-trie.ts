@@ -20,6 +20,32 @@ function toIsoTimestamp(value: number): string {
     return new Date(value).toISOString();
 }
 
+function normalizeFolderPath(folderPath?: string): string | undefined {
+    if (!folderPath) {
+        return undefined;
+    }
+
+    const normalized = folderPath
+        .replace(/\\/g, '/')
+        .split('/')
+        .map(segment => segment.trim())
+        .filter(Boolean)
+        .join('/');
+
+    return normalized || undefined;
+}
+
+function folderPathFromSourcePath(sourcePath?: string): string | undefined {
+    const normalized = normalizeFolderPath(sourcePath);
+    if (!normalized) {
+        return undefined;
+    }
+
+    const segments = normalized.split('/');
+    segments.pop();
+    return segments.length > 0 ? segments.join('/') : undefined;
+}
+
 function entryTimestamp(entry: FotosEntry): string {
     return resolveExif(entry)?.date ?? toIsoTimestamp(entry.stream.created);
 }
@@ -35,6 +61,7 @@ function toIndexedEntry(entry: FotosEntry): IndexedFotosEntry {
         capturedAt,
         updatedAt: addedAt,
         sourcePath: entry.sourcePath,
+        folderPath: normalizeFolderPath(entry.folderPath ?? folderPathFromSourcePath(entry.sourcePath)),
     };
 }
 
@@ -44,7 +71,6 @@ function stripIndexedEntry(entry: IndexedFotosEntry): FotosEntry {
         addedAt: _addedAt,
         capturedAt: _capturedAt,
         updatedAt: _updatedAt,
-        folderPath: _folderPath,
         ...plain
     } = entry;
 
@@ -101,6 +127,10 @@ export class FotosTrie {
         return indexed
             .filter(entry => isWithinRange(entryTimestamp(entry), from, to))
             .map(stripIndexedEntry);
+    }
+
+    async getEntriesForFolder(folderPath?: string): Promise<FotosEntry[]> {
+        return (await this.gallery.getEntriesForFolder(folderPath)).map(stripIndexedEntry);
     }
 
     async syncRoot(): Promise<Hash | null> {

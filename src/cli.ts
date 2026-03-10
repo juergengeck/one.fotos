@@ -105,10 +105,11 @@ program
     .command('list')
     .description('List entries in the collection')
     .option('-t, --tag <tag>', 'Filter by tag')
+    .option('-f, --folder <folder>', 'Filter by folder path')
     .action(async (opts) => {
         const dir = process.cwd();
         const catalog = await loadCatalog(dir);
-        const entries = filterPhotos(catalog, opts.tag);
+        const entries = await filterPhotos(catalog, opts.tag, opts.folder);
 
         if (entries.length === 0) {
             console.log('No entries found.');
@@ -121,8 +122,9 @@ program
             const date = exif?.date ? `  ${exif.date}` : '';
             const mode = e.managed[0].toUpperCase();
             const size = (e.size / 1024 / 1024).toFixed(1) + 'MB';
+            const folder = e.folderPath ? `  <${e.folderPath}>` : '';
             console.log(
-                `  ${e.stream.id.slice(0, 8)}  ${mode}  ${size.padStart(7)}  ${e.name}${date}${tags}`
+                `  ${e.stream.id.slice(0, 8)}  ${mode}  ${size.padStart(7)}  ${e.name}${folder}${date}${tags}`
             );
         }
 

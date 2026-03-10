@@ -20,6 +20,8 @@ export interface FotosEntry {
     managed: 'reference' | 'metadata' | 'ingested';
     /** Path to original file (for reference/metadata mode) */
     sourcePath?: string;
+    /** Canonical folder membership for grouping and folder-trie queries */
+    folderPath?: string;
     /** Relative path to thumbnail (if generated) */
     thumb?: string;
     /** Tags/labels */

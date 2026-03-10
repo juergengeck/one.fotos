@@ -1,5 +1,5 @@
 import {readFile, writeFile, stat, copyFile, mkdir} from 'node:fs/promises';
-import {join, basename} from 'node:path';
+import {join, basename, dirname, relative, isAbsolute} from 'node:path';
 import type {Stream} from '@refinio/chat.media';
 import type {CatalogV2, FotosEntry, FotosConfig, ExifData} from './types.js';
 import {DEFAULT_CONFIG} from './types.js';
@@ -19,6 +19,46 @@ interface CatalogV2OnDisk {
     created: string;
     device?: string;
     trieSnapshot: FotosTrieSnapshot;
+}
+
+function normalizeFolderPath(value?: string): string | undefined {
+    if (!value) {
+        return undefined;
+    }
+
+    const normalized = value
+        .replace(/\\/g, '/')
+        .split('/')
+        .map(segment => segment.trim())
+        .filter(Boolean)
+        .join('/');
+
+    return normalized || undefined;
+}
+
+function folderPathFromSourcePath(sourcePath?: string): string | undefined {
+    const normalized = normalizeFolderPath(sourcePath);
+    if (!normalized) {
+        return undefined;
+    }
+
+    const segments = normalized.split('/');
+    segments.pop();
+    return segments.length > 0 ? segments.join('/') : undefined;
+}
+
+function resolveFolderPath(catalogDir: string, filePath: string): string | undefined {
+    const rawRelativeDir = relative(catalogDir, dirname(filePath));
+    if (rawRelativeDir === '' || rawRelativeDir === '.') {
+        return undefined;
+    }
+
+    const relativeDir = normalizeFolderPath(rawRelativeDir);
+    if (relativeDir && !relativeDir.startsWith('..') && !isAbsolute(relativeDir)) {
+        return relativeDir;
+    }
+
+    return normalizeFolderPath(dirname(filePath));
 }
 
 /**
@@ -42,10 +82,11 @@ export async function loadCatalog(dir: string): Promise<CatalogV2> {
                 photos: Array<{
                     hash: string;
                     name: string;
-                    managed: 'reference' | 'metadata' | 'ingested';
-                    sourcePath?: string;
-                    thumb?: string;
-                    tags: string[];
+                managed: 'reference' | 'metadata' | 'ingested';
+                sourcePath?: string;
+                folderPath?: string;
+                thumb?: string;
+                tags: string[];
                     exif?: ExifData;
                     exifHash?: string;
                     addedAt: string;
@@ -79,6 +120,7 @@ export async function loadCatalog(dir: string): Promise<CatalogV2> {
                     name: photo.name,
                     managed: photo.managed,
                     sourcePath: photo.sourcePath,
+                    folderPath: photo.folderPath ?? folderPathFromSourcePath(photo.sourcePath),
                     thumb: photo.thumb,
                     tags: photo.tags,
                     size: photo.size,
@@ -215,6 +257,7 @@ export async function addPhoto(
         stream,
         name: basename(filePath),
         managed: mode === 'ingest' ? 'ingested' : mode,
+        folderPath: resolveFolderPath(dir, filePath),
         tags: [],
         size: fileStat.size,
         copies: [config.deviceName],
@@ -310,11 +353,15 @@ export async function untagPhotos(
 /**
  * List entries, optionally filtered by tag.
  */
-export function filterPhotos(
+export async function filterPhotos(
     catalog: CatalogV2,
-    tag?: string
-): FotosEntry[] {
-    const entries = catalog.trie.allEntries();
+    tag?: string,
+    folder?: string
+): Promise<FotosEntry[]> {
+    const entries = folder
+        ? await catalog.trie.getEntriesForFolder(folder)
+        : catalog.trie.allEntries();
+
     if (!tag) return entries;
     return entries.filter(e => e.tags.includes(tag));
 }

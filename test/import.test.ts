@@ -43,6 +43,7 @@ describe('bundle import', () => {
                 },
                 name: 'photo.jpg',
                 managed: 'metadata',
+                folderPath: 'Trips/Berlin',
                 thumb: thumbName,
                 tags: ['travel'],
                 size: 1234,
@@ -64,6 +65,7 @@ describe('bundle import', () => {
         });
         expect(catalog.name).toBe('shared-bundle');
         expect(entry?.tags).toEqual(['travel']);
+        expect(entry?.folderPath).toBe('Trips/Berlin');
         expect(entry?.thumb).toBe(thumbName);
         expect(existsSync(join(targetDir, 'thumbs', thumbName))).toBe(true);
     });
