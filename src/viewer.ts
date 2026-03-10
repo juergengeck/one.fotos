@@ -31,6 +31,10 @@ ${STYLE}
 <nav class="controls">
     <input class="search" id="search" type="search" placeholder="Search by name, tag, camera...">
     <div class="tag-filter" id="tagFilter"></div>
+    <div class="mode-toggle" role="tablist" aria-label="Gallery mode">
+        <button class="mode-btn active" id="modeTimeline" data-mode="timeline">Timeline</button>
+        <button class="mode-btn" id="modeFolders" data-mode="folders">Folders</button>
+    </div>
     <div class="view-toggle">
         <button class="view-btn active" id="gridSmall" title="Small grid">&#9638;</button>
         <button class="view-btn" id="gridLarge" title="Large grid">&#9632;</button>
@@ -204,13 +208,22 @@ header .fotos-link:hover { color: #aaa; }
 .tag-btn { background: #2a2a2a; border: 1px solid #444; color: #ccc; padding: 4px 10px; border-radius: 12px; font-size: 12px; cursor: pointer; }
 .tag-btn:hover { background: #333; }
 .tag-btn.active { background: #335; border-color: #55a; color: #aaf; }
-.view-toggle { margin-left: auto; display: flex; gap: 4px; }
+.mode-toggle { margin-left: auto; display: flex; gap: 4px; }
+.mode-btn { background: #2a2a2a; border: 1px solid #444; color: #aaa; padding: 6px 12px; border-radius: 999px; cursor: pointer; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
+.mode-btn.active { background: #335; border-color: #55a; color: #eef; }
+.view-toggle { display: flex; gap: 4px; }
 .view-btn { background: #2a2a2a; border: 1px solid #444; color: #888; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 16px; }
 .view-btn.active { color: #eee; border-color: #666; }
 
-/* Gallery: the markup is semantic, display as grid */
-.gallery { padding: 16px; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
-.gallery.large { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+/* Gallery: the markup is semantic, grouped client-side for browsing */
+.gallery { padding: 16px; display: flex; flex-direction: column; gap: 20px; }
+.gallery-group { display: flex; flex-direction: column; gap: 10px; }
+.gallery-group[hidden] { display: none; }
+.gallery-group-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 0 4px; }
+.gallery-group-title { color: #ddd; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.gallery-group-meta { color: #777; font-size: 11px; }
+.gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.gallery.large .gallery-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
 
 .foto { position: relative; aspect-ratio: 1; overflow: hidden; border-radius: 4px; cursor: pointer; background: #222; }
 .foto img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.2s; display: block; }
@@ -258,13 +271,15 @@ header .fotos-link:hover { color: #aaa; }
 const SCRIPT = `<script>
 // --- Read catalog from DOM ---
 const BLOB_ROOT = localStorage.getItem('fotos_blob_root') || 'blobs';
-const allFotos = Array.from(document.querySelectorAll('article.foto'));
+const gallery = document.getElementById('gallery');
+const allFotos = Array.from(gallery.querySelectorAll('article.foto'));
 const deleted = [];
 
 let activeTag = null;
 let searchQuery = '';
 let currentIndex = -1;
 let filtered = [];
+let galleryMode = 'timeline';
 
 function fotoData(el) {
     return {
@@ -272,12 +287,15 @@ function fotoData(el) {
         hash: el.dataset.hash,
         name: el.querySelector('h3')?.textContent || '',
         managed: el.dataset.managed,
+        addedAt: el.dataset.added || '',
         tags: Array.from(el.querySelectorAll('.tags li')).map(li => li.textContent),
         folderPath: el.dataset.folder || '',
         exif: readExif(el),
         thumb: el.querySelector('img')?.getAttribute('src') || '',
     };
 }
+
+const allFotoData = allFotos.map(fotoData);
 
 function readExif(el) {
     const dl = el.querySelector('dl.exif');
@@ -296,6 +314,82 @@ function photoSrc(f) {
     return f.thumb;
 }
 
+function parseExifDate(value) {
+    if (!value) return Number.NaN;
+    const normalized = value
+        .trim()
+        .replace(/^(\\d{4}):(\\d{2}):(\\d{2})/, '$1-$2-$3')
+        .replace(' ', 'T');
+    const timestamp = Date.parse(normalized);
+    return Number.isNaN(timestamp) ? Number.NaN : timestamp;
+}
+
+function fotoTimestamp(f) {
+    const exifTimestamp = parseExifDate(f.exif.date);
+    if (!Number.isNaN(exifTimestamp)) return exifTimestamp;
+    const addedTimestamp = Date.parse(f.addedAt || '');
+    return Number.isNaN(addedTimestamp) ? 0 : addedTimestamp;
+}
+
+function timelineKey(f) {
+    const timestamp = fotoTimestamp(f);
+    if (!timestamp) return 'unknown';
+    return new Date(timestamp).toISOString().slice(0, 10);
+}
+
+function timelineLabel(key) {
+    if (key === 'unknown') return 'Unknown date';
+    const timestamp = Date.parse(key + 'T00:00:00Z');
+    if (Number.isNaN(timestamp)) return key;
+    return new Intl.DateTimeFormat(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        weekday: 'short',
+    }).format(new Date(timestamp));
+}
+
+function folderKey(f) {
+    return f.folderPath || 'Unfiled';
+}
+
+function compareFolderKeys(left, right) {
+    if (left === right) return 0;
+    if (left === 'Unfiled') return 1;
+    if (right === 'Unfiled') return -1;
+    return left.localeCompare(right, undefined, { sensitivity: 'base' });
+}
+
+function compareByNewest(left, right) {
+    return fotoTimestamp(right) - fotoTimestamp(left)
+        || left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
+}
+
+function orderFotos(fotos) {
+    const ordered = [...fotos];
+    if (galleryMode === 'folders') {
+        ordered.sort((left, right) =>
+            compareFolderKeys(folderKey(left), folderKey(right))
+            || compareByNewest(left, right)
+        );
+        return ordered;
+    }
+    ordered.sort(compareByNewest);
+    return ordered;
+}
+
+function currentGroupKey(f) {
+    return galleryMode === 'folders' ? folderKey(f) : timelineKey(f);
+}
+
+function currentGroupLabel(key) {
+    return galleryMode === 'folders' ? key : timelineLabel(key);
+}
+
+function photoCountLabel(count) {
+    return count === 1 ? '1 photo' : count + ' photos';
+}
+
 function matchesSearch(f, q) {
     if (!q) return true;
     q = q.toLowerCase();
@@ -306,19 +400,75 @@ function matchesSearch(f, q) {
         || (f.exif.date || '').includes(q);
 }
 
+function renderGallery(ordered, matchesFilter) {
+    const groups = [];
+    const groupByKey = new Map();
+
+    ordered.forEach(f => {
+        const key = currentGroupKey(f);
+        let group = groupByKey.get(key);
+        if (!group) {
+            group = {
+                key,
+                label: currentGroupLabel(key),
+                items: [],
+                visibleCount: 0,
+            };
+            groupByKey.set(key, group);
+            groups.push(group);
+        }
+        group.items.push(f);
+        if (!f.el.hidden && matchesFilter(f)) group.visibleCount += 1;
+    });
+
+    gallery.innerHTML = '';
+    const fragment = document.createDocumentFragment();
+
+    groups.forEach(group => {
+        const section = document.createElement('section');
+        section.className = 'gallery-group';
+        section.hidden = group.visibleCount === 0;
+
+        const header = document.createElement('header');
+        header.className = 'gallery-group-header';
+
+        const title = document.createElement('div');
+        title.className = 'gallery-group-title';
+        title.textContent = group.label;
+
+        const meta = document.createElement('div');
+        meta.className = 'gallery-group-meta';
+        meta.textContent = photoCountLabel(group.visibleCount);
+
+        const grid = document.createElement('div');
+        grid.className = 'gallery-grid';
+
+        header.append(title, meta);
+        section.append(header, grid);
+
+        group.items.forEach(f => {
+            const isVisible = !f.el.hidden && matchesFilter(f);
+            f.el.style.display = isVisible ? '' : 'none';
+            grid.appendChild(f.el);
+        });
+
+        fragment.appendChild(section);
+    });
+
+    gallery.appendChild(fragment);
+}
+
+function updateModeButtons() {
+    document.getElementById('modeTimeline').classList.toggle('active', galleryMode === 'timeline');
+    document.getElementById('modeFolders').classList.toggle('active', galleryMode === 'folders');
+}
+
 function applyFilters() {
-    filtered = allFotos.filter(el => !el.hidden).map(fotoData).filter(f => {
-        if (activeTag && !f.tags.includes(activeTag)) return false;
-        return matchesSearch(f, searchQuery);
-    });
-    // Show/hide articles in the DOM
-    allFotos.forEach(el => {
-        if (el.hidden) { el.style.display = 'none'; return; }
-        const f = fotoData(el);
-        const match = (!activeTag || f.tags.includes(activeTag)) && matchesSearch(f, searchQuery);
-        el.style.display = match ? '' : 'none';
-    });
-    const total = allFotos.filter(el => !el.hidden).length;
+    const ordered = orderFotos(allFotoData);
+    const matchesFilter = f => (!activeTag || f.tags.includes(activeTag)) && matchesSearch(f, searchQuery);
+    filtered = ordered.filter(f => !f.el.hidden && matchesFilter(f));
+    renderGallery(ordered, matchesFilter);
+    const total = allFotoData.filter(f => !f.el.hidden).length;
     document.getElementById('stats').textContent =
         filtered.length + ' of ' + total + ' photos'
         + (deleted.length ? ' (' + deleted.length + ' pending delete)' : '');
@@ -326,10 +476,9 @@ function applyFilters() {
 
 function renderTags() {
     const tags = {};
-    allFotos.forEach(el => {
-        if (el.hidden) return;
-        el.querySelectorAll('.tags li').forEach(li => {
-            const t = li.textContent;
+    allFotoData.forEach(f => {
+        if (f.el.hidden) return;
+        f.tags.forEach(t => {
             tags[t] = (tags[t] || 0) + 1;
         });
     });
@@ -451,6 +600,7 @@ function closeLightbox() {
 }
 
 // --- Init ---
+updateModeButtons();
 renderTags();
 applyFilters();
 
@@ -464,7 +614,18 @@ document.getElementById('tagFilter').addEventListener('click', e => {
     applyFilters();
 });
 
-document.getElementById('gallery').addEventListener('click', e => {
+document.getElementById('modeTimeline').addEventListener('click', () => {
+    galleryMode = 'timeline';
+    updateModeButtons();
+    applyFilters();
+});
+document.getElementById('modeFolders').addEventListener('click', () => {
+    galleryMode = 'folders';
+    updateModeButtons();
+    applyFilters();
+});
+
+gallery.addEventListener('click', e => {
     const foto = e.target.closest('article.foto');
     if (!foto) return;
     const idx = filtered.findIndex(f => f.el === foto);
