@@ -48,6 +48,9 @@ fotos ingest /path/to/photos --owner "Alice"
 
 # Force re-process everything
 fotos ingest /path/to/photos --owner "Alice" --force
+
+# Import a portable gallery bundle into the current collection
+fotos import /path/to/exported-bundle
 ```
 
 ## Commands
@@ -63,6 +66,7 @@ fotos ingest /path/to/photos --owner "Alice" --force
 | `fotos tags` | List all tags with counts |
 | `fotos view` | Generate HTML viewer |
 | `fotos export <dir>` | Export collection subset as bundle |
+| `fotos import <dir>` | Import a portable gallery bundle into the current collection |
 | `fotos status` | Collection stats |
 
 ### Ingest options

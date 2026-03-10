@@ -1,6 +1,7 @@
 import {mkdir, copyFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {writeFile} from 'node:fs/promises';
+import {createBundleManifest, FOTOS_BUNDLE_MANIFEST} from './bundle.js';
 import type {Catalog, ExifData} from './types.js';
 import {blobPath} from './hash.js';
 import {filterPhotos, loadCatalog, loadConfig} from './catalog.js';
@@ -87,6 +88,15 @@ export async function exportCollection(
     await writeFile(
         join(targetDir, 'index.html'),
         generateViewer(exportCatalog)
+    );
+
+    await writeFile(
+        join(targetDir, FOTOS_BUNDLE_MANIFEST),
+        JSON.stringify(
+            createBundleManifest(config, !!options.includeOriginals),
+            null,
+            2
+        ) + '\n'
     );
 
     return {exported: entries.length};

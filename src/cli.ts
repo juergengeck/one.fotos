@@ -3,6 +3,7 @@
 import {Command} from 'commander';
 import {resolve} from 'node:path';
 import {writeFile} from 'node:fs/promises';
+import {planGalleryIntake} from '@refinio/fotos.core';
 import {
     addPhoto,
     loadCatalog,
@@ -15,10 +16,14 @@ import {
 } from './catalog.js';
 import {generateViewer} from './viewer.js';
 import {exportCollection} from './export.js';
+import {importCollectionBundle} from './import.js';
 import {ingestMediaDirectory, writeGitignore} from './ingest.js';
 import type {AddMode} from './catalog.js';
 import type {FotosConfig, ExifData} from './types.js';
 import {DEFAULT_CONFIG} from './types.js';
+
+const libraryIntakePlan = planGalleryIntake('one.fotos', 'filesystem');
+const bundleIntakePlan = planGalleryIntake('one.fotos', 'bundle');
 
 const program = new Command();
 
@@ -196,6 +201,19 @@ program
     });
 
 program
+    .command('import <sourceDir>')
+    .description(bundleIntakePlan.summary)
+    .action(async (sourceDir: string) => {
+        const dir = process.cwd();
+        const source = resolve(sourceDir);
+        const result = await importCollectionBundle(dir, source);
+        console.log(`Imported ${result.imported} entries from ${source}`);
+        if (result.skipped > 0) console.log(`  ${result.skipped} duplicates skipped`);
+        if (result.copiedThumbs > 0) console.log(`  ${result.copiedThumbs} thumbnails copied`);
+        if (result.copiedOriginals > 0) console.log(`  ${result.copiedOriginals} originals copied`);
+    });
+
+program
     .command('status')
     .description('Show collection status')
     .action(async () => {
@@ -228,7 +246,7 @@ program
 
 program
     .command('ingest [dir]')
-    .description('Scan directory tree, extract metadata, generate thumbnails, write .one/ folders')
+    .description(libraryIntakePlan.summary)
     .option('--owner <owner>', 'Collection owner')
     .option('--device <device>', 'Device name', 'default')
     .option('--force', 'Re-process all folders even if unchanged', false)
@@ -249,7 +267,7 @@ program
 
         await saveConfig(targetDir, config);
 
-        console.log(`Ingesting ${targetDir}...`);
+        console.log(`Ingesting library ${targetDir}...`);
         if (opts.faces) console.log('  Face detection + recognition enabled');
         const result = await ingestMediaDirectory(targetDir, config, {
             force: opts.force,
